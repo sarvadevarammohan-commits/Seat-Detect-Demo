@@ -1,14 +1,16 @@
 import type { Detection, DetectionMode, SeatConfig } from './types';
 
-const IOU_THRESHOLD = 0.08;
+const IOU_THRESHOLD = 0.10;
+const OVERLAP_THRESHOLD = 0.25;
 
-function computeIoU(a: number[], b: number[]): number {
+function computeIoUUnder(a: number[], b: number[]): number {
   const xa = Math.max(a[0], b[0]), ya = Math.max(a[1], b[1]);
   const xb = Math.min(a[2], b[2]), yb = Math.min(a[3], b[3]);
   const inter = Math.max(0, xb - xa) * Math.max(0, yb - ya);
   if (inter === 0) return 0;
   const aA = Math.max(1, (a[2] - a[0]) * (a[3] - a[1]));
   const aB = Math.max(1, (b[2] - b[0]) * (b[3] - b[1]));
+  // We use Min Area for the denominator to catch cases where a person is inside a large seat zone
   return inter / Math.min(aA, aB);
 }
 
@@ -22,10 +24,6 @@ function overlapRatio(p: number[], s: number[]): number {
 function centerIn(p: number[], s: number[]): boolean {
   const cx = (p[0] + p[2]) / 2, cy = (p[1] + p[3]) / 2;
   return s[0] <= cx && cx <= s[2] && s[1] <= cy && cy <= s[3];
-}
-
-function personInSeat(p: number[], s: number[]): boolean {
-  return computeIoU(p, s) >= IOU_THRESHOLD || overlapRatio(p, s) >= 0.2 || centerIn(p, s);
 }
 
 function bottomCenter(p: number[]): [number, number] {
@@ -59,51 +57,76 @@ function centerInPolygon(p: number[], poly: [number, number][]): boolean {
   return pointInPolygon(cx, cy, poly);
 }
 
+/**
+ * NEW: Greedy assignment check.
+ * Each detection can only occupy ONE seat (the one with the highest "score").
+ * This prevents a single person from triggering multiple adjacent seats.
+ */
 export function checkOccupancy(
   dets: Detection[], seats: SeatConfig[], mode: DetectionMode
 ): boolean[] {
-  if (mode === 'exclusive') return exclusive(dets, seats);
   const occ = new Array(seats.length).fill(false);
-  for (let i = 0; i < seats.length; i++) {
-    const s = seats[i];
-    for (const d of dets) {
-      const pb = [d.x1, d.y1, d.x2, d.y2];
-      let match = false;
+  if (dets.length === 0 || seats.length === 0) return occ;
 
-      if (mode === 'polygon') {
-        if (s.polygon) {
-          // Check anchor point in polygon OR center in polygon
-          match = anchorInPolygon(pb, s.polygon) || centerInPolygon(pb, s.polygon);
-        } else if (s.box) {
-          // Fallback: treat box as polygon
-          match = personInSeat(pb, s.box);
-        }
-      } else {
-        // For 'anchor' and 'rectangle' modes: use HYBRID check
-        // This works for both eye-level cameras AND elevated CCTV
-        if (s.box) {
-          match = personInSeat(pb, s.box) || anchorInRect(pb, s.box);
+  // 1. Calculate all possible scores
+  const assignments: { detIdx: number; seatIdx: number; score: number }[] = [];
+
+  dets.forEach((d, dIdx) => {
+    const pb = [d.x1, d.y1, d.x2, d.y2];
+    seats.forEach((s, sIdx) => {
+      let score = 0;
+      if (mode === 'polygon' && s.polygon) {
+        const anchorInside = anchorInPolygon(pb, s.polygon);
+        const centerInside = centerInPolygon(pb, s.polygon);
+        // Polygon mode should be strict to avoid neighbor seat bleed.
+        score = anchorInside ? 2 + (centerInside ? 0.5 : 0) : 0;
+      } else if (s.box) {
+        const iou = computeIoUUnder(pb, s.box);
+        const ratio = overlapRatio(pb, s.box);
+        const centerInside = centerIn(pb, s.box);
+        const anchorInside = anchorInRect(pb, s.box);
+
+        if (mode === 'anchor') {
+          // Prefer bottom-center anchor for CCTV top-down views.
+          if (!anchorInside && ratio < 0.45) {
+            score = 0;
+          } else {
+            score = (anchorInside ? 2 : 0) + ratio * 0.9 + iou * 0.6 + (centerInside ? 0.2 : 0);
+          }
+        } else if (mode === 'exclusive') {
+          const isMatch = iou >= IOU_THRESHOLD || ratio >= OVERLAP_THRESHOLD || centerInside;
+          if (isMatch) {
+            score = ratio * 1.2 + iou * 0.8 + (centerInside ? 0.2 : 0);
+          }
+        } else {
+          // Rectangle mode: balanced overlap + center check.
+          const isMatch = iou >= IOU_THRESHOLD || ratio >= OVERLAP_THRESHOLD || centerInside;
+          if (isMatch) {
+            score = Math.max(iou, ratio) + (centerInside ? 0.3 : 0);
+          }
         }
       }
 
-      if (match) { occ[i] = true; break; }
-    }
-  }
-  return occ;
-}
+      if (score > 0) {
+        assignments.push({ detIdx: dIdx, seatIdx: sIdx, score });
+      }
+    });
+  });
 
-function exclusive(dets: Detection[], seats: SeatConfig[]): boolean[] {
-  const occ = new Array(seats.length).fill(false);
-  for (const d of dets) {
-    const pb = [d.x1, d.y1, d.x2, d.y2];
-    let bestIdx = -1, bestScore = 0;
-    for (let i = 0; i < seats.length; i++) {
-      if (!seats[i].box) continue;
-      const sc = Math.max(overlapRatio(pb, seats[i].box!), computeIoU(pb, seats[i].box!));
-      if (sc > bestScore && sc >= IOU_THRESHOLD) { bestScore = sc; bestIdx = i; }
+  // 2. Sort by score descending and assign greedily
+  assignments.sort((a, b) => b.score - a.score);
+
+  const usedDets = new Set<number>();
+  const usedSeats = new Set<number>();
+
+  for (const entry of assignments) {
+    if (!usedDets.has(entry.detIdx) && !usedSeats.has(entry.seatIdx)) {
+      occ[entry.seatIdx] = true;
+      usedDets.add(entry.detIdx);
+      usedSeats.add(entry.seatIdx);
     }
-    if (bestIdx >= 0) occ[bestIdx] = true;
   }
+
   return occ;
 }
 
@@ -112,7 +135,7 @@ export class TemporalSmoother {
   private win: number;
   private ratio: number;
 
-  constructor(n: number, win = 5, ratio = 0.5) {
+  constructor(n: number, win = 7, ratio = 0.4) {
     this.win = win;
     this.ratio = ratio;
     this.hist = Array.from({ length: n }, () => []);

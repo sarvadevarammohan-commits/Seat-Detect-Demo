@@ -338,8 +338,8 @@ export default function Home() {
           fpsTimeRef.current = now;
         }
 
-        // Inference using OffscreenCanvas from video directly (avoids getImageData lag)
-        const MIN_INFERENCE_GAP = 200;
+        // Run inference as often as available without overlapping runs.
+        const MIN_INFERENCE_GAP = 0;
         if (
           !detectBusy.current &&
           detectorRef.current?.isReady &&
@@ -348,13 +348,7 @@ export default function Home() {
         ) {
           detectBusy.current = true;
           lastInferenceRef.current = now;
-          // Draw video to a small offscreen canvas for inference — NO getImageData on display canvas
-          const iw = video.videoWidth, ih = video.videoHeight;
-          const offscreen = new OffscreenCanvas(iw, ih);
-          const offCtx = offscreen.getContext('2d')!;
-          offCtx.drawImage(video, 0, 0, iw, ih);
-          const imgData = offCtx.getImageData(0, 0, iw, ih);
-          detectorRef.current.detect(imgData, confRef.current)
+          detectorRef.current.detect(video, confRef.current)
             .then((newDets) => {
               detsRef.current = newDets; setDetections(newDets);
               const raw = checkOccupancy(newDets, seatsRef.current, modeRef.current);
@@ -392,8 +386,8 @@ export default function Home() {
           }
         });
 
-        // Person detections — shrunk 50% + dashed + subtle
-        const SHRINK = 0.50;
+        // Person detections — shrunk 40% + dashed + subtle
+        const SHRINK = 0.40;
         curDets.forEach((d) => {
           const w = d.x2 - d.x1, h = d.y2 - d.y1;
           const sx1 = d.x1 + w * (SHRINK / 2);
@@ -425,7 +419,8 @@ export default function Home() {
       seatDefs = setupBoxes.map((box, i) => ({ id: `S${i + 1}`, box: box }));
     }
     setSeats(seatDefs);
-    smootherRef.current = new TemporalSmoother(seatDefs.length, 3, 0.5);
+    // Slightly shorter smoothing window for faster seat-state updates.
+    smootherRef.current = new TemporalSmoother(seatDefs.length, 5, 0.4);
     setOccupied(new Array(seatDefs.length).fill(false));
     setPhase('detect');
     loadModel();

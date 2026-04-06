@@ -1,4 +1,5 @@
 import type { Detection } from './types';
+import type { InferenceSession, Tensor } from 'onnxruntime-web';
 
 const MODEL_INPUT_SIZE = 640;
 const PERSON_CLASS_ID = 0;
@@ -10,7 +11,9 @@ async function getOrt() {
     ortModule = await import('onnxruntime-web');
     ortModule.env.wasm.wasmPaths =
       'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.3/dist/';
-    ortModule.env.wasm.numThreads = 1;
+    // Use available CPU threads for higher throughput on WASM backend.
+    const hwThreads = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 2 : 2;
+    ortModule.env.wasm.numThreads = Math.max(1, Math.min(4, hwThreads));
   }
   return ortModule;
 }
@@ -22,9 +25,7 @@ interface LetterboxInfo {
 }
 
 export class YOLODetector {
-  private session: InstanceType<
-    typeof import('onnxruntime-web').InferenceSession
-  > | null = null;
+  private session: InferenceSession | null = null;
   private inputName = '';
   private outputName = '';
 
@@ -34,8 +35,12 @@ export class YOLODetector {
   ): Promise<void> {
     const ort = await getOrt();
     const buffer = await this.fetchWithProgress(modelUrl, onProgress);
+    const providers = typeof navigator !== 'undefined' && 'gpu' in navigator
+      ? (['webgpu', 'wasm'] as const)
+      : (['wasm'] as const);
     this.session = await ort.InferenceSession.create(buffer, {
-      executionProviders: ['wasm'],
+      executionProviders: [...providers],
+      graphOptimizationLevel: 'all',
     });
     this.inputName = this.session.inputNames[0];
     this.outputName = this.session.outputNames[0];
@@ -70,74 +75,81 @@ export class YOLODetector {
     return buf.buffer;
   }
 
+  private targetCanvas: OffscreenCanvas | null = null;
+  private tensorValue: Float32Array | null = null;
+
   private preprocess(
-    imageData: ImageData,
+    source: CanvasImageSource,
     targetSize = MODEL_INPUT_SIZE
   ): { tensor: Float32Array; letterbox: LetterboxInfo } {
-    const { width, height } = imageData;
+    const width = source instanceof HTMLVideoElement ? source.videoWidth : (source as any).width;
+    const height = source instanceof HTMLVideoElement ? source.videoHeight : (source as any).height;
+
     const scale = Math.min(targetSize / width, targetSize / height);
     const newW = Math.round(width * scale);
     const newH = Math.round(height * scale);
     const padX = Math.round((targetSize - newW) / 2);
     const padY = Math.round((targetSize - newH) / 2);
 
-    const srcCanvas = new OffscreenCanvas(width, height);
-    const srcCtx = srcCanvas.getContext('2d')!;
-    srcCtx.putImageData(imageData, 0, 0);
-
-    const canvas = new OffscreenCanvas(targetSize, targetSize);
-    const ctx = canvas.getContext('2d')!;
+    if (!this.targetCanvas) {
+      this.targetCanvas = new OffscreenCanvas(targetSize, targetSize);
+    }
+    const ctx = this.targetCanvas.getContext('2d', { willReadFrequently: true })!;
     ctx.fillStyle = '#808080';
     ctx.fillRect(0, 0, targetSize, targetSize);
-    ctx.drawImage(srcCanvas, padX, padY, newW, newH);
+    ctx.drawImage(source, padX, padY, newW, newH);
 
     const resized = ctx.getImageData(0, 0, targetSize, targetSize);
     const pixels = resized.data;
     const cSize = targetSize * targetSize;
-    const tensor = new Float32Array(3 * cSize);
+    if (!this.tensorValue) this.tensorValue = new Float32Array(3 * cSize);
+    
     for (let i = 0; i < cSize; i++) {
       const pi = i * 4;
-      tensor[i] = pixels[pi] / 255;
-      tensor[cSize + i] = pixels[pi + 1] / 255;
-      tensor[2 * cSize + i] = pixels[pi + 2] / 255;
+      this.tensorValue[i] = pixels[pi] / 255;
+      this.tensorValue[cSize + i] = pixels[pi + 1] / 255;
+      this.tensorValue[2 * cSize + i] = pixels[pi + 2] / 255;
     }
-    return { tensor, letterbox: { scale, padX, padY } };
+    return { tensor: this.tensorValue, letterbox: { scale, padX, padY } };
   }
 
   async detect(
-    imageData: ImageData,
+    source: CanvasImageSource,
     confThreshold = 0.4
   ): Promise<Detection[]> {
     if (!this.session) throw new Error('Model not loaded');
     const ort = await getOrt();
-    const { tensor, letterbox } = this.preprocess(imageData);
+    const { tensor, letterbox } = this.preprocess(source);
     const inputTensor = new ort.Tensor('float32', tensor, [
       1, 3, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE,
     ]);
-    const feeds: Record<string, InstanceType<typeof ort.Tensor>> = {};
+    const feeds: Record<string, Tensor> = {};
     feeds[this.inputName] = inputTensor;
     const results = await this.session.run(feeds);
     const output = results[this.outputName];
     const data = output.data as Float32Array;
 
-    // Output: [1, 84, 8400]  —  84 = 4 bbox + 80 classes
+    const width = source instanceof HTMLVideoElement ? source.videoWidth : (source as any).width;
+    const height = source instanceof HTMLVideoElement ? source.videoHeight : (source as any).height;
+
+    // Output: [1, 84, 8400]
     const numDets = 8400;
     const candidates: Detection[] = [];
     for (let i = 0; i < numDets; i++) {
       const score = data[(4 + PERSON_CLASS_ID) * numDets + i];
       if (score < confThreshold) continue;
-      const cx = data[0 * numDets + i];
-      const cy = data[1 * numDets + i];
+      const cxb = data[0 * numDets + i];
+      const cyb = data[1 * numDets + i];
       const w = data[2 * numDets + i];
       const h = data[3 * numDets + i];
-      let x1 = (cx - w / 2 - letterbox.padX) / letterbox.scale;
-      let y1 = (cy - h / 2 - letterbox.padY) / letterbox.scale;
-      let x2 = (cx + w / 2 - letterbox.padX) / letterbox.scale;
-      let y2 = (cy + h / 2 - letterbox.padY) / letterbox.scale;
+      let x1 = (cxb - w / 2 - letterbox.padX) / letterbox.scale;
+      let y1 = (cyb - h / 2 - letterbox.padY) / letterbox.scale;
+      let x2 = (cxb + w / 2 - letterbox.padX) / letterbox.scale;
+      let y2 = (cyb + h / 2 - letterbox.padY) / letterbox.scale;
       x1 = Math.max(0, x1);
       y1 = Math.max(0, y1);
-      x2 = Math.min(imageData.width, x2);
-      y2 = Math.min(imageData.height, y2);
+      x2 = Math.min(width, x2);
+      y2 = Math.min(height, y2);
       candidates.push({ x1, y1, x2, y2, confidence: score });
     }
     return this.nms(candidates, 0.5);
