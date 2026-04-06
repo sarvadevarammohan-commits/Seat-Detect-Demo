@@ -16,6 +16,7 @@ export default function Home() {
   const [numSeats, setNumSeats] = useState(2);
   const [seats, setSeats] = useState<SeatConfig[]>([]);
   const [confidence, setConfidence] = useState(0.4);
+  const [targetFps, setTargetFps] = useState(15);
   const [showFps, setShowFps] = useState(true);
   const [cameraId, setCameraId] = useState('');
   const [cameras, setCameras] = useState<MediaDeviceInfo[]>([]);
@@ -195,11 +196,13 @@ export default function Home() {
   const seatsRef = useRef(seats);
   const modeRef = useRef(mode);
   const confRef = useRef(confidence);
+  const targetFpsRef = useRef(targetFps);
   const detsRef = useRef(detections);
   const occRef = useRef(occupied);
   useEffect(() => { seatsRef.current = seats; }, [seats]);
   useEffect(() => { modeRef.current = mode; }, [mode]);
   useEffect(() => { confRef.current = confidence; }, [confidence]);
+  useEffect(() => { targetFpsRef.current = targetFps; }, [targetFps]);
   useEffect(() => { detsRef.current = detections; }, [detections]);
   useEffect(() => { occRef.current = occupied; }, [occupied]);
 
@@ -338,8 +341,10 @@ export default function Home() {
           fpsTimeRef.current = now;
         }
 
-        // Run inference as often as available without overlapping runs.
-        const MIN_INFERENCE_GAP = 0;
+        // Run inference based on user-selected target FPS.
+        // We compute a minimum gap between YOLO runs; busy-lock still prevents overlap.
+        const tfps = Math.max(5, Math.min(30, targetFpsRef.current || 15));
+        const MIN_INFERENCE_GAP = 1000 / tfps;
         if (
           !detectBusy.current &&
           detectorRef.current?.isReady &&
@@ -601,12 +606,37 @@ export default function Home() {
               <div className="detect-controls glass" style={{ marginTop: 12 }}>
                 <div className="slider-group">
                   <span>Confidence:</span>
-                  <input type="range" min={0.1} max={0.9} step={0.05} value={confidence} onChange={(e) => setConfidence(parseFloat(e.target.value))} id="detect-confidence" />
+                  <input
+                    type="range"
+                    min={0.1}
+                    max={0.9}
+                    step={0.05}
+                    value={confidence}
+                    onChange={(e) => setConfidence(parseFloat(e.target.value))}
+                    id="detect-confidence"
+                  />
                   <span className="val">{(confidence * 100).toFixed(0)}%</span>
                 </div>
+                <div className="slider-group">
+                  <span>Target FPS:</span>
+                  <input
+                    type="range"
+                    min={5}
+                    max={30}
+                    step={1}
+                    value={targetFps}
+                    onChange={(e) => setTargetFps(parseInt(e.target.value, 10) || 15)}
+                    id="detect-fps"
+                  />
+                  <span className="val">{targetFps} fps</span>
+                </div>
                 <div className="toggle-row" style={{ gap: 8 }}>
-                  <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>FPS</span>
-                  <button className={`toggle ${showFps ? 'on' : ''}`} onClick={() => setShowFps(!showFps)} id="fps-toggle" />
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Show FPS</span>
+                  <button
+                    className={`toggle ${showFps ? 'on' : ''}`}
+                    onClick={() => setShowFps(!showFps)}
+                    id="fps-toggle"
+                  />
                 </div>
                 <button className="btn btn-sm btn-secondary" onClick={goToConfigure} style={{ marginLeft: 'auto' }} id="reconfigure-btn">⚙ Reconfigure</button>
               </div>
