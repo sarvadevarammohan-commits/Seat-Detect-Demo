@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import './globals.css';
+import { AuthProvider } from '@/lib/auth-context';
 
 export const metadata: Metadata = {
   title: 'Seat Occupancy Monitor — Real-Time AI Detection',
@@ -14,7 +15,21 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <head>
+        {/* Load OpenCV.js for camera stabilization and advanced image processing */}
+        {/* Added crossOrigin="anonymous" to resolve the runtime cross-origin error */}
+        <script 
+          async 
+          src="https://docs.opencv.org/4.x/opencv.js" 
+          type="text/javascript" 
+          crossOrigin="anonymous"
+        ></script>
+      </head>
+      <body>
+        <AuthProvider>
+          {children}
+        </AuthProvider>
+      </body>
     </html>
   );
 }

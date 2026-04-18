@@ -12,6 +12,7 @@ export interface Detection {
   x2: number;
   y2: number;
   confidence: number;
+  classId: number;
 }
 
 export interface AppConfig {

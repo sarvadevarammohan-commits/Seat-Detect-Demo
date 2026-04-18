@@ -3,6 +3,7 @@ import type { InferenceSession, Tensor } from 'onnxruntime-web';
 
 const MODEL_INPUT_SIZE = 640;
 const PERSON_CLASS_ID = 0;
+const CHAIR_CLASS_ID = 56;
 
 let ortModule: typeof import('onnxruntime-web') | null = null;
 
@@ -11,9 +12,11 @@ async function getOrt() {
     ortModule = await import('onnxruntime-web');
     ortModule.env.wasm.wasmPaths =
       'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.3/dist/';
-    // Use available CPU threads for higher throughput on WASM backend.
+    // Only use multi-threading if the security environment allows SharedArrayBuffer
+    const canThread = typeof SharedArrayBuffer !== 'undefined';
     const hwThreads = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 2 : 2;
-    ortModule.env.wasm.numThreads = Math.max(1, Math.min(4, hwThreads));
+    ortModule.env.wasm.numThreads = canThread ? Math.max(1, Math.min(4, hwThreads)) : 1;
+    console.log(`🤖 AI Threads configured: ${ortModule.env.wasm.numThreads} (Multi-threading: ${canThread})`);
   }
   return ortModule;
 }
@@ -136,8 +139,14 @@ export class YOLODetector {
     const numDets = 8400;
     const candidates: Detection[] = [];
     for (let i = 0; i < numDets; i++) {
-      const score = data[(4 + PERSON_CLASS_ID) * numDets + i];
+      const personScore = data[(4 + PERSON_CLASS_ID) * numDets + i];
+      const chairScore = data[(4 + CHAIR_CLASS_ID) * numDets + i];
+      const score = Math.max(personScore, chairScore);
+      
       if (score < confThreshold) continue;
+      
+      const classId = personScore > chairScore ? PERSON_CLASS_ID : CHAIR_CLASS_ID;
+
       const cxb = data[0 * numDets + i];
       const cyb = data[1 * numDets + i];
       const w = data[2 * numDets + i];
@@ -150,7 +159,7 @@ export class YOLODetector {
       y1 = Math.max(0, y1);
       x2 = Math.min(width, x2);
       y2 = Math.min(height, y2);
-      candidates.push({ x1, y1, x2, y2, confidence: score });
+      candidates.push({ x1, y1, x2, y2, confidence: score, classId });
     }
     return this.nms(candidates, 0.5);
   }

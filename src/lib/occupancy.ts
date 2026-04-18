@@ -1,17 +1,16 @@
 import type { Detection, DetectionMode, SeatConfig } from './types';
 
-const IOU_THRESHOLD = 0.10;
-const OVERLAP_THRESHOLD = 0.25;
+const IOU_THRESHOLD = 0.05;    // Lower threshold for partial entry
+const OVERLAP_THRESHOLD = 0.15; // Trigger with just 15% overlap
 
 function computeIoUUnder(a: number[], b: number[]): number {
   const xa = Math.max(a[0], b[0]), ya = Math.max(a[1], b[1]);
   const xb = Math.min(a[2], b[2]), yb = Math.min(a[3], b[3]);
   const inter = Math.max(0, xb - xa) * Math.max(0, yb - ya);
   if (inter === 0) return 0;
-  const aA = Math.max(1, (a[2] - a[0]) * (a[3] - a[1]));
-  const aB = Math.max(1, (b[2] - b[0]) * (b[3] - b[1]));
-  // We use Min Area for the denominator to catch cases where a person is inside a large seat zone
-  return inter / Math.min(aA, aB);
+  const aArea = (a[2] - a[0]) * (a[3] - a[1]);
+  const bArea = (b[2] - b[0]) * (b[3] - b[1]);
+  return inter / Math.min(aArea, bArea);
 }
 
 function overlapRatio(p: number[], s: number[]): number {
@@ -87,22 +86,26 @@ export function checkOccupancy(
         const anchorInside = anchorInRect(pb, s.box);
 
         if (mode === 'anchor') {
-          // Prefer bottom-center anchor for CCTV top-down views.
-          if (!anchorInside && ratio < 0.45) {
-            score = 0;
-          } else {
-            score = (anchorInside ? 2 : 0) + ratio * 0.9 + iou * 0.6 + (centerInside ? 0.2 : 0);
+          // Anchor mode: High-angle optimization
+          // Sensitive but precise: anchor must be inside OR high overlap ratio
+          if (anchorInside) {
+            score = 5.0 + ratio * 2.0; // Strong anchor bias
+          } else if (centerInside && ratio > 0.3) {
+            score = 2.0 + ratio;
+          } else if (ratio > 0.45) {
+            score = 1.0 + ratio;
           }
         } else if (mode === 'exclusive') {
-          const isMatch = iou >= IOU_THRESHOLD || ratio >= OVERLAP_THRESHOLD || centerInside;
+          const isMatch = iou >= IOU_THRESHOLD || ratio >= 0.5 || centerInside;
           if (isMatch) {
-            score = ratio * 1.2 + iou * 0.8 + (centerInside ? 0.2 : 0);
+            // Favor 50% overlap and center-of-box heavily
+            score = (ratio >= 0.5 ? 10.0 : ratio * 2.0) + (centerInside ? 5.0 : 0) + iou;
           }
         } else {
-          // Rectangle mode: balanced overlap + center check.
-          const isMatch = iou >= IOU_THRESHOLD || ratio >= OVERLAP_THRESHOLD || centerInside;
+          // Rectangle mode: Maximum sensitivity
+          const isMatch = (iou >= IOU_THRESHOLD || ratio >= OVERLAP_THRESHOLD) && (centerInside || anchorInside);
           if (isMatch) {
-            score = Math.max(iou, ratio) + (centerInside ? 0.3 : 0);
+            score = Math.max(iou, ratio) * 2.0 + (centerInside ? 1.5 : 0) + (anchorInside ? 1.5 : 0);
           }
         }
       }
@@ -135,7 +138,7 @@ export class TemporalSmoother {
   private win: number;
   private ratio: number;
 
-  constructor(n: number, win = 7, ratio = 0.4) {
+  constructor(n: number, win = 10, ratio = 0.5) {
     this.win = win;
     this.ratio = ratio;
     this.hist = Array.from({ length: n }, () => []);
