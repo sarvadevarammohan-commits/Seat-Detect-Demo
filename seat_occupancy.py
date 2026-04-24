@@ -46,10 +46,10 @@ PERSON_CLASS_ID = 0
 # ---------------------------------------------------------------------------
 # Detection confidence & overlap thresholds
 # ---------------------------------------------------------------------------
-CONF_THRESHOLD = 0.40       # minimum YOLO confidence to accept a detection
-IOU_THRESHOLD = 0.08        # minimum IoU between person-box and seat-zone
-SMOOTHING_WINDOW = 5        # number of frames for temporal smoothing
-OCCUPIED_VOTE_RATIO = 0.5   # ratio of "occupied" votes needed to declare occupied
+CONF_THRESHOLD = 0.45       # minimum YOLO confidence to accept a detection
+IOU_THRESHOLD = 0.05        # Lowered to 5% for better sensitivity 
+SMOOTHING_WINDOW = 7        # number of frames for temporal smoothing
+OCCUPIED_VOTE_RATIO = 0.4   # ratio of "occupied" votes needed to declare occupied
 
 # Valid detection modes
 VALID_MODES = ("rectangle", "anchor", "polygon", "exclusive")
@@ -132,7 +132,7 @@ def person_in_seat(person_box: Tuple[int, ...], seat_box: Tuple[int, ...]) -> bo
     iou = compute_iou(person_box, seat_box)
     olap = overlap_ratio(person_box, seat_box)
     ctr = center_in_box(person_box, seat_box)
-    return iou >= IOU_THRESHOLD or olap >= 0.20 or ctr
+    return iou >= IOU_THRESHOLD or olap >= 0.15 or ctr
 
 
 # ---------------------------------------------------------------------------
@@ -577,7 +577,7 @@ def main() -> int:
             for i, sbox in enumerate(seat_boxes):
                 for det in detections:
                     pbox = det[:4]
-                    if anchor_in_rect(pbox, sbox):
+                    if anchor_in_rect(pbox, sbox) or overlap_ratio(pbox, sbox) >= 0.15:
                         raw_occupied[i] = True
                         break
 
@@ -587,7 +587,7 @@ def main() -> int:
             for i, poly_pts in enumerate(seat_polygons):
                 for det in detections:
                     pbox = det[:4]
-                    if anchor_in_polygon(pbox, poly_pts):
+                    if anchor_in_polygon(pbox, poly_pts) or center_in_box(pbox, cv2.boundingRect(poly_pts)):
                         raw_occupied[i] = True
                         break
 
@@ -651,16 +651,48 @@ def main() -> int:
                 cv2.putText(vis, label, (x1 + 3, max(0, y1 - 5)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
 
-        # Draw person detections + anchor point (for anchor/polygon modes)
+        # Draw person detections — premium compact style
         for x1, y1, x2, y2, conf in detections:
-            cv2.rectangle(vis, (x1, y1), (x2, y2), (255, 200, 0), 2)
-            cv2.putText(vis, f"person {conf*100:.0f}%", (x1, max(0, y1 - 6)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 0), 1, cv2.LINE_AA)
+            w = x2 - x1
+            h = y2 - y1
+            
+            # Cap drawing aspect ratio to prevent 'long' boxes
+            draw_h = min(h, int(w * 2.2))
+            draw_y1 = y1 + (h - draw_h) // 2
+            
+            # Draw compact 'bracket' style box
+            bw = int(w * 0.70)
+            bh = int(draw_h * 0.70)
+            bx = x1 + (w - bw) // 2
+            by = draw_y1 + (draw_h - bh) // 2
+            
+            color = (0, 204, 255)  # yellow/gold in BGR: (0, 255, 255) or (0, 204, 255)
+            thickness = 2
+            length = max(5, int(min(bw, bh) * 0.25))
+            
+            # Draw corner brackets
+            # Top-left
+            cv2.line(vis, (bx, by), (bx + length, by), color, thickness)
+            cv2.line(vis, (bx, by), (bx, by + length), color, thickness)
+            # Top-right
+            cv2.line(vis, (bx + bw - length, by), (bx + bw, by), color, thickness)
+            cv2.line(vis, (bx + bw, by), (bx + bw, by + length), color, thickness)
+            # Bottom-right
+            cv2.line(vis, (bx + bw, by + bh - length), (bx + bw, by + bh), color, thickness)
+            cv2.line(vis, (bx + bw - length, by + bh), (bx + bw, by + bh), color, thickness)
+            # Bottom-left
+            cv2.line(vis, (bx, by + bh - length), (bx, by + bh), color, thickness)
+            cv2.line(vis, (bx + length, by + bh), (bx, by + bh), color, thickness)
+
+            # Label (conf)
+            cv2.putText(vis, f"{conf*100:.0f}%", (bx, max(15, by - 5)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA)
+            
             # Show anchor point for anchor/polygon modes
             if mode in ("anchor", "polygon"):
-                cx, by = bottom_center_of((x1, y1, x2, y2))
-                cv2.circle(vis, (cx, by), 6, (0, 255, 255), -1)
-                cv2.circle(vis, (cx, by), 8, (0, 0, 0), 2)
+                cx, by_p = bottom_center_of((x1, y1, x2, y2))
+                cv2.circle(vis, (cx, by_p), 5, (0, 255, 255), -1)
+                cv2.circle(vis, (cx, by_p), 6, (0, 0, 0), 1)
 
         # FPS
         fps_count += 1

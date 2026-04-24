@@ -48,50 +48,7 @@ export default function PublicDashboard() {
   const occupiedCount = Object.values(status).filter(Boolean).length;
   const freeCount = totalSeats - occupiedCount;
 
-  // Logic to group seats into rows based on Y coordinates
-  const generateDynamicLayout = () => {
-    const seatList = Object.values(seats);
-    if (seatList.length === 0) return [];
-    
-    // Sort by Y coordinate first
-    const sortedByY = [...seatList].sort((a, b) => {
-      const ya = a.box ? a.box[1] : (a.polygon ? Math.min(...a.polygon.map(p => p[1])) : 0);
-      const yb = b.box ? b.box[1] : (b.polygon ? Math.min(...b.polygon.map(p => p[1])) : 0);
-      return ya - yb;
-    });
-    
-    const rows: SeatConfig[][] = [];
-    let currentRow: SeatConfig[] = [];
-    let lastY = -1;
-    
-    // Threshold to consider seats in the same row (10% of typical 600px height is ~60px)
-    const ROW_THRESHOLD = 60;
 
-    sortedByY.forEach(s => {
-      const y = s.box ? s.box[1] : (s.polygon ? Math.min(...s.polygon.map(p => p[1])) : 0);
-      if (lastY === -1 || Math.abs(y - lastY) < ROW_THRESHOLD) {
-        currentRow.push(s);
-      } else {
-        rows.push(currentRow.sort((a, b) => {
-          const xa = a.box ? a.box[0] : (a.polygon ? Math.min(...a.polygon.map(p => p[0])) : 0);
-          const xb = b.box ? b.box[0] : (b.polygon ? Math.min(...b.polygon.map(p => p[0])) : 0);
-          return xa - xb;
-        }));
-        currentRow = [s];
-      }
-      lastY = y;
-    });
-    if (currentRow.length > 0) {
-      rows.push(currentRow.sort((a, b) => {
-        const xa = a.box ? a.box[0] : (a.polygon ? Math.min(...a.polygon.map(p => p[0])) : 0);
-        const xb = b.box ? b.box[0] : (b.polygon ? Math.min(...b.polygon.map(p => p[0])) : 0);
-        return xa - xb;
-      }));
-    }
-    return rows;
-  };
-
-  const dynamicRows = generateDynamicLayout();
 
   return (
     <div className="app-shell min-h-screen">
@@ -136,50 +93,37 @@ export default function PublicDashboard() {
             {/* Visual Floor Plan */}
             <div className="floor-plan-container glass">
               <div className="floor-plan-layout">
-                {source === 'file' ? (
-                  <>
-                    {/* BACK ROW */}
-                    <div className="seat-row">
-                      {['S1', 'S2', 'S3'].map(id => (
-                        <SeatPod key={id} id={id} isOccupied={!!status[id]} />
-                      ))}
+                <>
+                  {/* BACK ROW */}
+                  <div className="seat-row">
+                    {['S1', 'S2', 'S3'].map(id => (
+                      <SeatPod key={id} id={id} isOccupied={!!status[id]} />
+                    ))}
+                  </div>
+
+                  {/* MIDDLE AREA: ROUND TABLE + SIDE SEATS */}
+                  <div className="round-table-area">
+                    <div className="round-table-ui anim-float">
+                      <span className="table-label">Central Table</span>
                     </div>
 
-                    {/* MIDDLE AREA: ROUND TABLE + SIDE SEATS */}
-                    <div className="round-table-area">
-                      <div className="round-table-ui anim-float">
-                        <span className="table-label">Central Table</span>
-                      </div>
-
-                      {/* SIDE SEATS (ABS POSITIONED ON RIGHT) */}
-                      <div className="right-seats">
-                        <div className="seat-column">
-                          {['S7', 'S8', 'S9'].map(id => (
-                            <SeatPod key={id} id={id} isOccupied={!!status[id]} />
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* FRONT ROW */}
-                    <div className="seat-row">
-                      {['S4', 'S5', 'S6'].map(id => (
-                        <SeatPod key={id} id={id} isOccupied={!!status[id]} />
-                      ))}
-                    </div>
-                  </>
-                ) : (
-                  <div className="dynamic-grid space-y-8">
-                    {dynamicRows.map((row, i) => (
-                      <div key={i} className="seat-row flex justify-center gap-6 flex-wrap">
-                        {row.map(s => (
-                          <SeatPod key={s.id} id={s.id} isOccupied={!!status[s.id]} />
+                    {/* SIDE SEATS (ABS POSITIONED ON RIGHT) */}
+                    <div className="right-seats">
+                      <div className="seat-column">
+                        {['S7', 'S8', 'S9'].map(id => (
+                          <SeatPod key={id} id={id} isOccupied={!!status[id]} />
                         ))}
                       </div>
-                    ))}
-                    {dynamicRows.length === 0 && <p className="text-center opacity-40">Arranging seats...</p>}
+                    </div>
                   </div>
-                )}
+
+                  {/* FRONT ROW */}
+                  <div className="seat-row">
+                    {['S4', 'S5', 'S6'].map(id => (
+                      <SeatPod key={id} id={id} isOccupied={!!status[id]} />
+                    ))}
+                  </div>
+                </>
               </div>
             </div>
           </div>
