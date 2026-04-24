@@ -806,7 +806,7 @@ select option { background: #1a1a2e; }
 /* Right side positions */
 .right-seats {
   position: absolute;
-  right: -160px;
+  right: -240px;
   top: 50%;
   transform: translateY(-50%);
 }
